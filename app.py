@@ -247,7 +247,8 @@ def build_option_tree(stock_tree: list[list[float]], k: float, r: float, dt: flo
 
     # Terminal payoff for European call option.
     option_tree[steps] = [max(price - k, 0.0) for price in stock_tree[steps]]
-    discount = math.exp(-r * dt)
+    # Effective annual rate r: one-period discount (Δt in years, e.g. 1/m).
+    discount = (1.0 + r) ** (-dt)
 
     for t in range(steps - 1, -1, -1):
         level_values = []
@@ -372,8 +373,11 @@ def render_textbook_pricing_summary(
     """Present definitions + numeric substitution in a textbook-style layout."""
     with st.expander("Parameters with formulas", expanded=False):
         st.markdown(
-            "Textbook-style definitions and numeric substitution used in this pricing run."
+            "Textbook-style definitions and numeric substitution. "
+            "**r** is the **effective annual** risk-free rate; discount factors use **(1+r)** raised "
+            "to an exponent in **years** (e.g. one step: \\((1+r)^{\\Delta t}\\), maturity: \\((1+r)^{-T}\\))."
         )
+        r_growth_step = (1.0 + r) ** dt
 
         st.markdown("##### 1. Time to maturity")
         st.latex(r"T \;=\; N\,\Delta t \;=\; \frac{\tau}{m}")
@@ -392,15 +396,18 @@ def render_textbook_pricing_summary(
         )
 
         st.markdown("##### 3. Risk-neutral probability")
-        st.latex(r"p \;=\; \frac{e^{r\Delta t} - d}{u - d}")
-        st.caption("Numerical value")
+        st.latex(r"p \;=\; \frac{(1+r)^{\Delta t} - d}{u - d}")
+        st.caption("One-step growth factor \\((1+r)^{\\Delta t}\\) and numerical \\(p\\)")
+        st.latex(
+            rf"(1+r)^{{\Delta t}} \;=\; (1 + {r:.10f})^{{{dt:.10f}}} \;=\; \boxed{{{r_growth_step:.10f}}}"
+        )
         st.latex(rf"p \;=\; \boxed{{{p:.10f}}}")
 
-        st.markdown("##### 4. Continuous discount factor on the strike")
-        st.latex(r"e^{-rT}")
-        st.caption("Substitution")
+        st.markdown("##### 4. Effective discount factor on the strike")
+        st.latex(r"(1+r)^{-T}")
+        st.caption("Substitution (T in years)")
         st.latex(
-            rf"e^{{-rT}} \;=\; \exp\!\bigl(-({r:.10f})({t_maturity:.10f})\bigr) \;=\; \boxed{{{discount_k:.10f}}}"
+            rf"(1+r)^{{-T}} \;=\; (1 + {r:.10f})^{{-({t_maturity:.10f})}} \;=\; \boxed{{{discount_k:.10f}}}"
         )
 
         st.markdown("##### 5. European call (binomial tree, root node)")
@@ -409,17 +416,17 @@ def render_textbook_pricing_summary(
         st.latex(rf"C \;=\; \boxed{{{call_price:.10f}}}")
 
         st.markdown("##### 6. Put–call parity")
-        st.latex(r"C - P \;=\; S_0 - K\,e^{-rT}")
+        st.latex(r"C - P \;=\; S_0 - K\,(1+r)^{-T}")
         st.caption("Parity check (left-hand side vs. right-hand side)")
         st.latex(
             rf"C - P \;=\; {call_price:.10f} - ({put_price:.10f}) \;=\; \boxed{{{parity_lhs:.10f}}}"
         )
         st.latex(
-            rf"S_0 - K\,e^{{-rT}} \;=\; {s0:.10f} - {k:.10f}\cdot({discount_k:.10f}) \;=\; \boxed{{{parity_rhs:.10f}}}"
+            rf"S_0 - K\,(1+r)^{{-T}} \;=\; {s0:.10f} - {k:.10f}\cdot({discount_k:.10f}) \;=\; \boxed{{{parity_rhs:.10f}}}"
         )
 
         st.markdown("##### 7. European put (implied by parity)")
-        st.latex(r"P \;=\; C - S_0 + K\,e^{-rT}")
+        st.latex(r"P \;=\; C - S_0 + K\,(1+r)^{-T}")
         st.caption("Substitution")
         st.latex(
             rf"P \;=\; {call_price:.10f} - {s0:.10f} + {k:.10f}\cdot({discount_k:.10f}) \;=\; \boxed{{{put_price:.10f}}}"
@@ -427,7 +434,7 @@ def render_textbook_pricing_summary(
 
         st.markdown("##### Reference: one-period risk-neutral rollback")
         st.latex(
-            r"V(t,j) \;=\; e^{-r\Delta t}\Bigl(p\,V(t+1,j) + (1-p)\,V(t+1,j+1)\Bigr)"
+            r"V(t,j) \;=\; (1+r)^{-\Delta t}\Bigl(p\,V(t+1,j) + (1-p)\,V(t+1,j+1)\Bigr)"
         )
 
 
@@ -449,10 +456,11 @@ def main() -> None:
         tau = st.number_input("Tau (number of tree steps)", min_value=1, value=7, step=1)
     with col3:
         r = st.number_input(
-            "Risk-free rate r (annual, decimal)",
+            "Risk-free rate r (effective annual, decimal)",
             value=0.036,
             step=0.005,
             format="%.6f",
+            help="Discounting and p use (1+r) with time in years (e.g. factor per step (1+r)^(1/m)).",
         )
     uploaded_xlsx = st.file_uploader(
         "Choose Excel file (.xlsx) for volatility estimation",
@@ -479,7 +487,10 @@ def main() -> None:
             d = 1.0 / u
             if abs(u - d) < 1e-15:
                 raise ValueError("Invalid tree parameters: u and d are too close.")
-            p = (math.exp(r * dt) - d) / (u - d)
+            if 1.0 + r <= 0:
+                raise ValueError("Effective annual rate r must satisfy 1 + r > 0.")
+            rf_growth_step = (1.0 + r) ** dt
+            p = (rf_growth_step - d) / (u - d)
             if not (0.0 <= p <= 1.0):
                 raise ValueError(
                     f"Risk-neutral probability p={p:.6f} is outside [0, 1]. "
@@ -492,8 +503,8 @@ def main() -> None:
 
             # Total calendar time to maturity (years): N steps × Δt = τ/m.
             t_maturity = steps * dt
-            discount_k = math.exp(-r * t_maturity)
-            # European put from put–call parity: P = C − S0 + K e^(−rT).
+            discount_k = (1.0 + r) ** (-t_maturity)
+            # European put from put–call parity: P = C − S0 + K (1+r)^(−T).
             put_price = call_price - s0 + k * discount_k
             parity_lhs = call_price - put_price
             parity_rhs = s0 - k * discount_k
